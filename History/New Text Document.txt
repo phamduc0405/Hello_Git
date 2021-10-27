@@ -1,0 +1,323 @@
+from datetime import date
+from matplotlib import colors
+import pandas
+import pandas as pd
+from pandas.core.window import rolling
+pd.options.mode.chained_assignment=None
+from multiprocessing import Process, freeze_support, set_start_method
+import matplotlib.pyplot as plt 
+from matplotlib.animation import FuncAnimation
+import sqlalchemy
+import numpy as np
+#import pprint
+from binance.client import Client
+from binance import BinanceSocketManager
+from shapely.geometry import LineString
+
+#plt.ion()
+class MyMoney:
+    wallet = 10000
+    buy_price = 0
+    log_buy = 0
+interval = '100'   #Số lượng trích mẫu 
+time_interval = '4' # Thời gian mỗi lần lấy trích mẫu (minute)
+his= int(interval)*int(time_interval)  + int(time_interval)*2
+api_key = "A6S9QsiqeOahLIOsfdxziQLIT2TzJ4ADr08NbPWumcPPezRWCL7KaicEuD624rNH"
+api_scret = "BDKQqtvFzSEt9ADu9oPCKuM1fVql3RvSr51qOODvCQV8sFDEu3n6D5FSvY5pgxe5"
+client = Client(api_key,api_scret)
+def getminutedata(symbol,inter,lookback):   
+    frame = pd.DataFrame(client.get_historical_klines(symbol,inter,lookback))
+    frame =frame.iloc[:,:5]
+    frame.columns = ['Time','Open','High','Low','Close']
+    frame = frame.set_index('Time')
+    frame.index = pd.to_datetime(frame.index, unit ='ms')
+    frame = frame.astype(float)
+    return frame
+cDmp = 4   # Column number for idoc[,]
+cDmn = cDmp +1
+cTr = cDmp +2
+cTr14 = cDmp +3
+cDm14p = cDmp +4
+cDm14n = cDmp +5
+cDip = cDmp +6
+cDin = cDmp +7
+cDx = cDmp +8
+cAdx = cDmp +9
+
+def Crawl_Data():
+    #data = getminutedata('BTCUSDT',time_interval+'m',str(his)+' min ago UTC')
+    data = getminutedata('BTCUSDT',Client.KLINE_INTERVAL_1DAY,'102 days ago UTC')
+    #----------------------------------------------------------------------- ADX -----------------------------------------------------------------------
+
+    open, high, low, close ='Open','High', 'Low', 'Close'
+    columns = [ open,high, low, close]
+    data = data[columns]
+    data['+DM']=np.NaN #[4]
+    data['-DM']=np.NaN  #[4+1]
+    data['TR']=np.NaN  #[4+2]
+    data['TR14']=np.NaN  #[4+3]
+    data['+DM14']=np.NaN   #[4+4]
+    data['-DM14']=np.NaN  #[4+5]
+    data['+DI']=np.NaN  #[4+6]
+    data['-DI']=np.NaN   #[4+7]
+    data['DX']=np.NaN  #[4+8]
+    data['ADX'] = np.NaN #[4+9]
+
+    def calc_val(df, column,index):
+        prev_val = df.iloc[index-1][column]
+        curr_val = df.iloc[index][column]
+        return(curr_val, prev_val)
+
+    def calc_dm(df, index):
+        curr_high, prev_high = calc_val(df, high,index)
+        curr_low, prev_low = calc_val(df, low,index)
+
+        dm_pos = curr_high - prev_high
+        dm_neg = prev_low - curr_low
+        
+        if dm_pos > dm_neg:
+            if dm_pos < 0:
+                dm_pos = 0.00
+            dm_neg = 0.00
+            return(dm_pos, dm_neg)
+
+        elif dm_pos < dm_neg:
+            if dm_neg < 0:
+                dm_neg = 0.00
+            dm_pos = 0.00
+            return(dm_pos, dm_neg)
+        
+        else:
+            if dm_pos < 0:
+                dm_pos = 0.00
+            dm_neg = 0.00
+            return(dm_pos, dm_neg)
+
+
+    def calc_tr(df, index):
+        curr_high, prev_high = calc_val(df, 'High',index)
+        curr_low, prev_low = calc_val(df, 'Low',index)
+        curr_close, prev_close = calc_val(df, 'Close',index)
+        ranges = [curr_high - curr_low, abs(curr_high - prev_close), abs(curr_low - prev_close)]
+        TR = max(ranges)
+        return(TR)
+
+    def calc_first_14(df, index, column):
+        result = 0
+        for a in range(index-13, index+1):
+            result += df.iloc[a][column]
+        return(result)
+
+    def calc_subsequent_14(df, index, column):
+        return(df.iloc[index-1][column+'14'] - (df.iloc[index-1][column+'14']/14) + df.iloc[index][column])
+
+    def calc_first_adx(df, index):
+        result = 0
+        for a in range(index-13, index+1):
+            result += int(df.iloc[a]['DX'])
+        return(result/14)
+
+    def calc_adx(df, index):
+        return(round(((df.iloc[index-1]['ADX']*13) + df.iloc[index]['DX'])/14, 2))
+
+    for i in range(1, int(interval)):
+        dm_pos, dm_neg = calc_dm(data, i)
+        TR = calc_tr(data, i)   
+        data.iloc[i,cDmp]=dm_pos
+        data.iloc[i,cDmn] = dm_neg
+        data.iloc[i,cTr] = TR
+
+        if data[data.columns[cTr]].count() == 14:
+            data.iloc[i, cTr14] = calc_first_14(data, i, 'TR')
+            data.iloc[i, cDm14p] = calc_first_14(data, i, '+DM')
+            data.iloc[i, cDm14n] = calc_first_14(data, i, '-DM')
+        
+        elif data[data.columns[cTr]].count() >= 14:   
+            data.iloc[i, cTr14] = round(calc_subsequent_14(data, i, 'TR'),2)
+            data.iloc[i, cDm14p] = round(calc_subsequent_14(data, i, '+DM'), 2)
+            data.iloc[i, cDm14n] = round(calc_subsequent_14(data, i, '-DM'), 2)
+
+        if data[data.columns[cTr14]].count() >= 1:
+            data.iloc[i, cDip] = round((data.iloc[i, cDm14p] / data.iloc[i, cTr14])*100, 2)
+            data.iloc[i, cDin] = round((data.iloc[i, cDm14n] / data.iloc[i, cTr14])*100, 2)
+            data.iloc[i, cDx] = round((abs(data.iloc[i, cDip] - data.iloc[i, cDin])/abs(data.iloc[i,cDip] + data.iloc[i,cDin]) )*100 , 2)
+        if data[data.columns[cDx]].count()==14:
+                data.iloc[i, cAdx] = calc_first_adx(data, i)
+            
+        elif data[data.columns[cDx]].count()>=14:
+                data.iloc[i, cAdx] = calc_adx(data, i)
+
+
+    #---------------------------------------------------------------------SMA & EMA --------------------------------------------------------------------------------------
+    data['MA5'] = data['Close'].rolling(5).mean()
+    data['MA10'] = data['Close'].rolling(10).mean()
+    data['MA200'] = data['Close'].rolling(200).mean()
+    data['EMA10'] = data['Close'].ewm(span=10,adjust=False).mean()
+    data['EMA100'] = data['Close'].ewm(span=100,adjust=False).mean()
+
+    #---------------------------------------------------------------------- MACD --------------------------------------------------------------------------------------
+    exp1 = data['Close'].ewm(span= 12 , adjust= False).mean()
+    exp2 = data['Close'].ewm(span= 26 , adjust= False).mean()
+    data['MACD']=exp1 -exp2
+    data['Signal']  = data['MACD'].ewm(span= 9 , adjust= False).mean()
+
+    #---------------------------------------------------------------------- Stochastic Oscillator ------------------------------------------------------------------------
+    high14 = data ['High'].rolling(14).max()
+    low14 = data['Low'].rolling(14).min()
+    data['%K'] = (data['Close']-low14)*100/(high14-low14)
+    data['%D'] = data['%K'].rolling(3).mean()
+
+    #---------------------------------------------------------------------- RSI ------------------------------------------------------------------------------------------
+    delta =  data['Close'].diff()
+    up = delta.clip(lower=0)
+    down = -1*delta.clip(upper=0)
+    ema_up= up.ewm(com=13, adjust=False).mean()
+    ema_down=down.ewm(com=13,adjust=False).mean()
+    rs = ema_up/ema_down
+    data['RSI'] = 100 -(100/(1+rs))
+
+    #---------------------------------------------------------------------- CCI ------------------------------------------------------------------------------------------
+    def CCI(df, ndays): 
+        TP = (df['High'] + df['Low'] + df['Close']) / 3 
+        SMA = TP.rolling(ndays).mean()
+        MAD = TP.rolling(ndays).apply(lambda x: pd.Series(x).mad())
+        df['CCI'] = (TP - SMA) / (0.015 * MAD) 
+        return df
+    CCI(data,14)
+
+    #---------------------------------------------------------------------- Ichimoku ------------------------------------------------------------------------------------------
+    High9 = data.High.rolling(9).max()
+    Low9 = data.High.rolling(9).min()
+    High26 = data.High.rolling(26).max()
+    Low26 = data.High.rolling(26).min()
+    High52 = data.High.rolling(52).max()
+    Low52 = data.High.rolling(52).min()
+
+    data['Tenkan_sen']=(High9+Low9)/2
+    data['kijun_sen']=(High26+Low26)/2
+    data['Senkou_A']=((data['Tenkan_sen']+ data['kijun_sen'])/2).shift(26)
+    data['Senkou_B']=((High52+Low52)/2).shift(26)
+    data['Chikou']=data['Close'].shift(-26)
+
+
+
+
+    data['Index']= range(len(data))
+   # print(data.tail(50))
+    return data
+
+#-----------------------------------------------------------------Graph Trend ------------------------------------------------------------------------------------
+def EMA10_graph(df):
+    fig, ax = plt.subplots()
+    df[['EMA10']].plot(ax=ax)
+    plt.show()
+def ADX_graph(df):
+    fig, ax = plt.subplots()
+    df[['+DI','-DI','ADX']].plot(ax=ax)
+    plt.show()
+
+
+# def ADX_graph(df):
+   
+#     df=df.astype(np.float64)
+#     df[['+DI','-DI','ADX']].plot()
+#     plt.draw()
+#     plt.xlabel('Date',fontsize=18)
+#     plt.ylabel('Close Pride',fontsize=18)    
+#     plt.pause(60)
+#     plt.clf()
+x_values = []
+y_values = []
+
+plt.style.use('fivethirtyeight')
+fig = plt.figure()
+
+def pt_AB(x0,y0,x1,y1):
+    a= (y1-y0)/(x1-x0)
+    b= y1-a*x1
+    return a,b
+def pt_intersection(a0,b0,a1,b1):
+    x= (b1-b0)/(a0-a1)
+    y = a0*x + b0
+    return x,y
+curr_wallet=0
+def buy(curr_wallet):
+    curr = curr_wallet - 1000
+    return curr
+def sell(buy_price, curr_price, curr_wallet):
+    a= curr_price*1000/buy_price + curr_wallet
+    return a
+
+def graph_EMA1(i):
+    
+    update_data= []
+    update_data = Crawl_Data()
+    x_values = update_data['Index']
+    y_values = update_data['CCI']
+    y2_values = update_data['EMA100']
+    y3_values = update_data['MA200']
+    plt.cla() 
+    plt.plot(x_values,y_values,linewidth=1.0)
+    #plt.plot(x_values,y2_values,linewidth=1.0)
+    #print(update_data.head(50))
+    print(len(update_data))
+    for i in range(27,len(update_data)):    # Tìm điểm cắt nhau 
+      
+        a0,a1= update_data.iloc[i-1]['MACD'],update_data.iloc[i]['MACD']
+        b0,b1= update_data.iloc[i-1]['Signal'],update_data.iloc[i]['Signal']
+        # a0,a1 = y_values[i-1],y_values[i]
+        # b0,b1 = y2_values[i-1],y2_values[i]
+        # if (a0>b0 and a1<b1) or (a0<b0 and a1>b1): 
+        #     if  (a0<b0 and a1>b1):
+        #         MyMoney.wallet = buy(MyMoney.wallet)
+        #         MyMoney.buy_price = update_data.iloc[i]['Close']
+        #        # print(MyClass.buy_price)
+        #     if  (a0>b0 and a1<b1)and MyMoney.buy_price > 0:
+        #         MyMoney.wallet = sell(MyMoney.buy_price,update_data.iloc[i]['Close'],MyMoney.wallet)
+        #         print(MyMoney.buy_price ,'-----', update_data.iloc[i]['Close'],'--------------',i)
+
+        #     x0,y0 = pt_AB(update_data.iloc[i-1]['Index'],a0,update_data.iloc[i]['Index'],a1)
+        #     x1,y1 = pt_AB(update_data.iloc[i-1]['Index'],b0,update_data.iloc[i]['Index'],b1)
+        #     M,N = pt_intersection(x0,y0,x1,y1)
+        #     plt.plot(M, N, 'ro')
+
+            ## Chỉ Số Main = CCI
+        # if (update_data.iloc[i-1]['CCI']<-100 and update_data.iloc[i]['CCI'] >= -100)   and update_data.iloc[i]['ADX'] >= 25 and MyMoney.buy_price == 0  and update_data.iloc[i]['%K'] > update_data.iloc[i]['%D']  and update_data.iloc[i]['MACD'] > update_data.iloc[i]['Signal']: # and update_data.iloc[i]['+DI'] > update_data.iloc[i]['-DI']: #and update_data.iloc[i]['RSI'] > 60: #and update_data.iloc[i]['+DI'] > update_data.iloc[i]['-DI'] : and update_data.iloc[i]['MA5'] > update_data.iloc[i]['EMA100']
+        #     MyMoney.wallet = buy(MyMoney.wallet)
+        #     MyMoney.buy_price = update_data.iloc[i]['Close']
+        #     MyMoney.log_buy = i
+        #     print('---------------')
+        # if (update_data.iloc[i]['Open'] < 0.9*MyMoney.buy_price  or (update_data.iloc[i]['CCI']<=100 and update_data.iloc[i-1]['CCI']>100)  ) and MyMoney.buy_price >0 :
+        #     MyMoney.wallet = sell(MyMoney.buy_price,update_data.iloc[i]['Open'],MyMoney.wallet)
+        #     print(MyMoney.buy_price ,'-----', update_data.iloc[i]['Open'],'--------------',MyMoney.log_buy,'--------------------------', i)
+        #     MyMoney.buy_price, MyMoney.log_buy = 0,0
+
+        
+            
+        if  update_data.iloc[i]['CCI'] < 100 and update_data.iloc[i]['MACD'] > 0 and update_data.iloc[i]['MACD'] > update_data.iloc[i]['Signal'] and update_data.iloc[i]['+DI'] > update_data.iloc[i]['-DI'] and update_data.iloc[i]['ADX'] >= 25 and MyMoney.buy_price == 0: #and MyMoney.buy_price == 0 and update_data.iloc[i]['%K'] > update_data.iloc[i]['%D'] and update_data.iloc[i]['+DI'] > update_data.iloc[i]['-DI'] :
+                MyMoney.wallet = buy(MyMoney.wallet)
+                MyMoney.buy_price = update_data.iloc[i]['Close']
+                MyMoney.log_buy = i
+                print('---------------')               
+        if  ((a0>b0 and a1<b1) or update_data.iloc[i]['MACD'] < update_data.iloc[i]['Signal'] < 0 or update_data.iloc[i]['%K'] < update_data.iloc[i]['%D']) and MyMoney.buy_price > 0:
+            MyMoney.wallet = sell(MyMoney.buy_price,update_data.iloc[i]['Open'],MyMoney.wallet)
+            print(MyMoney.buy_price ,'-----', update_data.iloc[i]['Open'],'--------------',MyMoney.log_buy,'--------------------------', i)
+            MyMoney.buy_price, MyMoney.log_buy = 0,0        
+
+            x0,y0 = pt_AB(update_data.iloc[i-1]['Index'],a0,update_data.iloc[i]['Index'],a1)
+            x1,y1 = pt_AB(update_data.iloc[i-1]['Index'],b0,update_data.iloc[i]['Index'],b1)
+            M,N = pt_intersection(x0,y0,x1,y1)
+            plt.plot(M, N, 'ro')
+        
+
+    print(MyMoney.wallet)
+    plt.xlabel('Time')
+    plt.ylabel('Price')
+    plt.title('Name')
+    plt.gcf().autofmt_xdate()
+   # plt.tight_layout()
+
+ani = FuncAnimation(plt.gcf(),graph_EMA1,interval=10000) 
+plt.tight_layout()
+plt.show()
+    
