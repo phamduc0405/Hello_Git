@@ -17,6 +17,9 @@ from binance.client import Client
 from binance import BinanceSocketManager
 from shapely.geometry import LineString
 from scipy.signal import savgol_filter
+import threading
+import logging
+
 #plt.ion()
 class MyMoney:
     wallet = 10000
@@ -27,8 +30,10 @@ class MyMoney:
     profit = 0
     stoploss = 0
     start_cap = 1000
-symbol = 'NEARUSDT'
-interval = '1000'   #Số lượng trích mẫu 
+    d_test = []
+coinname = 'SHIB'
+symbol = coinname +'USDT'
+interval = '100'   #Số lượng trích mẫu 
 time_interval = '4' # Thời gian mỗi lần lấy trích mẫu (minute)
 his= int(interval)*int(time_interval)  + int(time_interval)*2
 api_key = "A6S9QsiqeOahLIOsfdxziQLIT2TzJ4ADr08NbPWumcPPezRWCL7KaicEuD624rNH"
@@ -43,20 +48,97 @@ def sell(buy_price, curr_price, curr_wallet,Money):
 def getminutedata(sym,inter,lookback1,lookback2):   
     #frame = pd.DataFrame(client.get_historical_klines(symbol,inter,lookback1,lookback2))
     frame = pd.DataFrame(client.get_historical_klines(sym,inter,lookback1))
-    frame =frame.iloc[:,:6]
-    frame.columns = ['Time','Open','High','Low','Close','Volumn']
+    frame =frame.iloc[:,:8]
+    frame.columns = ['Time','Open','High','Low','Close','Volume','Close_Time','Quote_Volumn']
     frame = frame.set_index('Time')
     frame.index = pd.to_datetime(frame.index, unit ='ms')
     frame = frame.astype(float)
     return frame
+
 def getcurrentprice(sym):
     frame = pd.DataFrame(client.get_symbol_ticker(symbol = sym))
+    
     frame = frame.astype(float)
     return frame
-def Crawl_Data():
+
+def create_symbols_list(filter='USDT'):
+    rows = []
+    info = pd.DataFrame(client.get_all_isolated_margin_symbols())
+    info=info.loc[info['quote'] == 'USDT']
+    pairs_data = info.iloc[:]['symbol']
+    full_data = pairs_data[pairs_data.str.contains(filter)]
+    info['symbol'].apply(lambda x: x==full_data)
+    return full_data
+
+def get_Product(filter='USDT'):
+    rows = []
+    info = pd.DataFrame(client.get_products()['data'])
+    info=info.loc[info['q'] == 'USDT']
+    rows = pd.DataFrame(rows,columns=['s','name','cs','c','cap'])
+    rows['s']=info.s
+    rows['name']=info.b
+    rows['cs']=info.cs
+    rows['c']=info.c
+    rows['cap']=info.c * info.cs
+    rows = rows.loc[(rows['name'] != 'USDC') & (rows['name'] != 'USDS') & (rows['name'] != 'BUSD') ]
+    rows = rows.nlargest(20, ['cap']).reset_index() 
+    return rows
+print (get_Product())
+list_coin = list(create_symbols_list('USDT'))
+
+
+# removes 11, 18, 23
+unwanted = ['USDCUSDT', 'USDSUSDT', 'USDSBUSDT', 'BUSDUSDT','EURUSDT', 'TUSDUSDT','LENDUSDT','NPXSUSDT', 'XZCUSDT']
+for i in range (0,(int(len(list_coin))-1) ):
+    
+    c_name = list_coin[i]
+    if (c_name[len(c_name)-4] + c_name[len(c_name)-3] + c_name[len(c_name)-2] + c_name[len(c_name)-1])!= 'USDT' :
+        unwanted.append(c_name)
+
+for i in range (0,(int(len(unwanted)))):  
+    if unwanted[i] in list_coin :
+        list_coin.remove(unwanted[i])
+    
+#print ('---------------',list_coin,len(list_coin),'----')
+
+def filter(df,list):
+    Rows=[]
+    for i in range(0,len(list)):          
+        df2  = getminutedata(list[i],Client.KLINE_INTERVAL_1DAY,'1 days ago UTC',"28 OCT, 2021")
+        Rows.append([df2.iloc[0]['Volume'],list[i],df2.iloc[0]['Volume'] * df2.iloc[0]['Close'] ])
+    df = pd.DataFrame(Rows,columns=['Volume','Symbol','Cap'])
+    df = df.nlargest(10, ['Cap']).reset_index() 
+    print(df)
+    return df    
+#filter(MyMoney.d_test,list_coin)
+print('---------------------')
+
+
+def Real_Buy(sym,usd):      #usd: Số tiền usd bỏ vào mua
+    curr_price = client.get_symbol_ticker(symbol = "CELOUSDT" )
+    order = client.create_order(symbol = sym,side = 'BUY',type = 'MARKET',quantity = float(round(usd/float(curr_price['price']))))
+    return order
+
+def Real_Sell(sym,coin_name):
+    #curr_price = client.get_symbol_ticker(symbol = sym )
+    balance= client.get_asset_balance(asset=coin_name)
+    order = client.create_order(symbol = sym,side = 'SELL',type = 'MARKET',quantity = float(balance['free']))
+    return order
+
+
+def acount (coin_name):
+    Account = client.get_account()   # Lấy dữ liệu ng dùng
+    balance= client.get_asset_balance(asset=coin_name) # Lấy số dư coin mong muốn
+    return Account,balance
+
+
+    #---------------------------------------------------------------------------------------Crawl Data ------------------------------------------------
+def Crawl_Data(sym):
+        
     #data = getminutedata('BTCUSDT',time_interval+'m',str(his)+' min ago UTC')
-    data = getminutedata(symbol,Client.KLINE_INTERVAL_4HOUR,'4004 hours ago UTC',"28 OCT, 2021")
+    data = getminutedata(sym,Client.KLINE_INTERVAL_4HOUR,'2004 hours ago UTC',"28 OCT, 2021")
     #data = getminutedata(symbol,Client.KLINE_INTERVAL_4HOUR,"1 JAN, 2021", "28 OCT, 2021")
+    
     #----------------------------------------------------------------------- ADX -----------------------------------------------------------------------
 
     def ADX(df,index_column):       
@@ -172,10 +254,10 @@ def Crawl_Data():
         return df
         data['MA10'] = data['Close'].rolling(10).mean()
         data['MA200'] = data['Close'].rolling(200).mean()
-    #MA(data,30)
+    
     def EMA(df,number):
         data['EMA'+str(number)] = data['Close'].ewm(span=number,adjust=False).mean()
-    EMA(data,20)
+    #EMA(data,20)
     #data['EMA100'] = data['Close'].ewm(span=100,adjust=False).mean()
     #print(data.tail(50))
     #---------------------------------------------------------------------- MACD --------------------------------------------------------------------------------------
@@ -263,6 +345,14 @@ def Crawl_Data():
         sma350 = MA(df,350)['MA350']
         sma111 = MA(df,111)['MA111']
 
+#------------------------------------------------------------------------DPO Detrended Price Oscillator-----------------------------------------------------------
+    
+    def detrended_price_oscillator(df,period):
+        
+        # Calculating the Simple Moving Average 
+        MA(data,period)        
+        df['DPO'] = df.Close - df.MA20.shift(periods =int(period/2 +1))       
+        return df
 #-----------------------------------------------------------------------Super Trend -----------------------------------------------------------
     
     def tr(df):
@@ -299,7 +389,6 @@ def Crawl_Data():
                     upperband[current] = upperband[previous]
             
         return df
-    
     supertrend(data,10,3) 
     #supertrend(data,20,5)
     supertrend(data,20,6)
@@ -308,7 +397,7 @@ def Crawl_Data():
 
     data = data.dropna()   # Lọc những dữ liệu NaN
     #data['price change'] = data['Close'].pct_change()
-    data = data.dropna()   # Lọc những dữ liệu NaN
+    #data = data.dropna()   # Lọc những dữ liệu NaN
     #print(data.tail(50))
     #print(data.head(50))
     return data
@@ -408,9 +497,6 @@ def pt_intersection(a0,b0,a1,b1):
     y = a0*x + b0
     return x,y
 
-
-
-
 #------------------------------------------------------------Candle-------------------------0:N/A     1: Up   -1: Down-------------
 
 def harami_up(index,df):    #mang thai
@@ -472,7 +558,6 @@ def doji(index,df):                      # Chưa viết xong
         df.Close[index-1]< df.Open[index-1] ) :
         return 1
         
-
 def check_candle(index,df):
     a = harami_up(index,df) 
     b = windows_gaps(index,df)
@@ -484,53 +569,71 @@ def check_candle(index,df):
     return f
 
 def main(i):       
-    update_data = Crawl_Data()
+    avg_profit =[]
+    Listcoin=list(get_Product().s)
+    print(Listcoin)
     #print(update_data.tail(10))
     # plt.cla() 
     # plt.plot(update_data.index,update_data.EMA20,linewidth=1.0,color='green')
     # plt.plot(update_data.index,update_data.Close,linewidth=1.0,color='green')
-    for i in range(90,len(update_data)):       
-        # if update_data.iloc[i-1]['in_uptrend10'] != update_data.iloc[i]['in_uptrend10']:
-        #     print(update_data.index[i])
-        #     plt.plot(update_data.index[i], update_data.iloc[i]['Close'], 'ro')   # cham diem tren so do
-                     
-        if (update_data.iloc[i-2]['CCI']>0>update_data.iloc[i-1]['CCI'] or update_data.iloc[i]['Low'] < MyMoney.stoploss ) and  MyMoney.buy_price >0:
-            if  update_data.iloc[i]['Low'] < MyMoney.stoploss :
-                MyMoney.wallet = sell(MyMoney.buy_price,MyMoney.stoploss,MyMoney.wallet,MyMoney.start_cap)
-            elif  update_data.iloc[i-2]['CCI']>0>update_data.iloc[i-1]['CCI'] :
-                MyMoney.wallet = sell(MyMoney.buy_price,update_data.iloc[i]['Open'],MyMoney.wallet,MyMoney.start_cap)
-                       
-            if update_data.Open[i] >=  MyMoney.buy_price : MyMoney.Win_Count+= 1
-            if update_data.Open[i] <  MyMoney.buy_price : MyMoney.Loss_Count+= 1
-            #print(MyMoney.buy_price ,'-----', update_data.Open[i],'-----',MyMoney.log_buy,'-----', i, '--Win--',MyMoney.Win_Count,'--Loss--',MyMoney.Loss_Count,'-----',abs(update_data.Open[i]-MyMoney.buy_price),'------',MyMoney.wallet)
-            MyMoney.buy_price, MyMoney.log_buy = 0,0     
-        if  update_data.iloc[i-2]['CCI']<100 < update_data.iloc[i]['CCI'] and update_data.iloc[i-1]['in_uptrend10'] == update_data.iloc[i-1]['in_uptrend20'] == True and MyMoney.buy_price ==0 :
-                if MyMoney.wallet >= 10000 :
-                    MyMoney.start_cap = MyMoney.wallet - 9000
-                else :
-                    MyMoney.start_cap = 1000
-                MyMoney.wallet = buy(MyMoney.wallet,MyMoney.start_cap)
-                MyMoney.buy_price = update_data.iloc[i]['Open']
-                MyMoney.stoploss = 0.8*MyMoney.buy_price
-                MyMoney.log_buy = i
-                #print('---------------',update_data.index[i])                           
-        
-    if(MyMoney.buy_price > 0):
-        MyMoney.wallet = MyMoney.wallet + MyMoney.start_cap
+    #top10_coin = filter(MyMoney.d_test,list_coin)
+    for a in range(0,len(Listcoin)-1) :
+        print(Listcoin[a])
+        update_data = Crawl_Data(Listcoin[a])
+        MyMoney.wallet = 10000
+        MyMoney.Win_Count = 0
         MyMoney.buy_price = 0
-    print(MyMoney.wallet)
-    # plt.xlabel('Time')
-    # plt.ylabel('Price')
-    # plt.title('Name')
-    # plt.gcf().autofmt_xdate()
-    # plt.tight_layout()
-
+        MyMoney.log_buy =0
+        MyMoney.Loss_Count = 0
+        MyMoney.stoploss = 0
+        MyMoney.profit = 0
+        MyMoney.start_cap = 1000
+        
+        for i in range(20,len(update_data)):       
+            # if update_data.iloc[i-1]['in_uptrend10'] != update_data.iloc[i]['in_uptrend10']:
+            #     print(update_data.index[i])
+            #     plt.plot(update_data.index[i], update_data.iloc[i]['Close'], 'ro')   # cham diem tren so do
+                        
+            if (update_data.iloc[i-2]['CCI']>0>update_data.iloc[i-1]['CCI'] or update_data.iloc[i]['Low'] < MyMoney.stoploss ) and  MyMoney.buy_price >0:
+                if  update_data.iloc[i]['Low'] < MyMoney.stoploss :
+                    MyMoney.wallet = sell(MyMoney.buy_price,MyMoney.stoploss,MyMoney.wallet,MyMoney.start_cap)
+                elif  update_data.iloc[i-2]['CCI']>0>update_data.iloc[i-1]['CCI'] :
+                    MyMoney.wallet = sell(MyMoney.buy_price,update_data.iloc[i]['Open'],MyMoney.wallet,MyMoney.start_cap)
+                        
+                if update_data.Open[i] >=  MyMoney.buy_price : MyMoney.Win_Count+= 1
+                if update_data.Open[i] <  MyMoney.buy_price : MyMoney.Loss_Count+= 1
+                #print(MyMoney.buy_price ,'-----', update_data.Open[i],'-----',MyMoney.log_buy,'-----', i, '--Win--',MyMoney.Win_Count,'--Loss--',MyMoney.Loss_Count,'-----',abs(update_data.Open[i]-MyMoney.buy_price),'------',MyMoney.wallet)
+                MyMoney.buy_price, MyMoney.log_buy = 0,0     
+            if  update_data.iloc[i-2]['CCI']<100 < update_data.iloc[i]['CCI'] and update_data.iloc[i-1]['in_uptrend10'] == update_data.iloc[i-1]['in_uptrend20'] == True and MyMoney.buy_price ==0 :
+                    if MyMoney.wallet >= 10000 :
+                        MyMoney.start_cap = MyMoney.wallet - 9000
+                    else :
+                        MyMoney.start_cap = 1000
+                    MyMoney.wallet = buy(MyMoney.wallet,MyMoney.start_cap)
+                    MyMoney.buy_price = update_data.iloc[i]['Open']
+                    MyMoney.stoploss = 0.8*MyMoney.buy_price
+                    MyMoney.log_buy = i
+                    #print('---------------',update_data.index[i])                           
+            
+        if(MyMoney.buy_price > 0):
+            MyMoney.wallet = MyMoney.wallet + MyMoney.start_cap
+            MyMoney.buy_price = 0
+        print(MyMoney.wallet,'-------',a,'--win: ',MyMoney.Win_Count,'--loss: ',MyMoney.Loss_Count,'---',update_data.Volume[len(update_data)-1])
+        avg_profit.append(MyMoney.wallet)
+        # plt.xlabel('Time')
+        # plt.ylabel('Price')
+        # plt.title('Name')
+        # plt.gcf().autofmt_xdate()
+        # plt.tight_layout()
+    print (np.mean(avg_profit))
 #ani = FuncAnimation(plt.gcf(),main,interval=10000)         
 # plt.tight_layout()
 # plt.show()
 
 while True:
     main(1)
-    print (client.get_symbol_ticker(symbol = symbol )['price'])
-    sleep(0.1)
+    #print (client.get_symbol_ticker(symbol = symbol )['price'])
+    #print (coinname)
+    print('--------------------------------------------------------------')
+    #sleep(1)
     
