@@ -342,8 +342,9 @@ def cap10_main():                 #--------------------- Lấy Dữ Top 10 Coin 
     print (np.mean(avg_profit))
 
 while True:
-    cap10_main()
+    # cap10_main()
     #print (client.get_symbol_ticker(symbol = symbol )['price'])
     #print (coinname)
     print('--------------------------------------------------------------')
     #sleep(1)
+    # printe("Test")
